@@ -1,0 +1,29 @@
+# 注意：本仓库里的 cordis.patch.yml 是分发包的一部分（bundle 挂载声明），必须提交。
+# 真正的用户配置在 DSH profile 目录下，不属于本仓库：
+#   C:\Users\<你>\.dsh\profiles\web\cordis.patch.yml
+
+# 依赖与构建产物
+node_modules/
+pnpm-lock.yaml
+coverage/
+
+# npm pack 产物（可随时用 npm pack 重新生成，不入库）
+*.tgz
+
+# 本地真实配置：含 webhook token 与签名密钥，绝不入库
+config.local.yml
+config.local.yaml
+*.local.yml
+.env
+.env.*
+!.env.example
+
+# 日志与临时文件
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# 临时打包验证目录
+.tmp-sign/
+

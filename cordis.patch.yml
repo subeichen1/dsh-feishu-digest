@@ -1,0 +1,28 @@
+# dsh-feishu-digest 的 bundle patch。
+#
+# 这个文件会被 DSH 当作「profile 层的一块拼图」读取：
+# 当本包出现在某个 profile 的依赖里（且 package.json 声明了 dsh.bundle.patch），
+# DSH 就会按 dsh.profile.bundles 的顺序，把这里的条目插入到运行树的根层。
+#
+# 字段含义（源码：@deepseek-ai/dsh-app-boot/lib/index.js 的 applyEntryPatches）：
+#   id      条目唯一 id，供后续 patch 覆盖时引用
+#   name    要加载的 npm 包名（本包自身）
+#   config  传给插件 apply(ctx, config) 的配置对象
+#
+# 下面刻意不写 config：所有用户私有信息（webhook、签名密钥）都不进代码仓库。
+# 配置请写在 profile 的 cordis.patch.yml 里，用同一个 id 覆盖：
+#
+#   - id: feishu-digest
+#     config:
+#       webhook: https://open.feishu.cn/open-apis/bot/v2/hook/你的-token
+#       secret: 你的签名密钥
+#       dropProgress: true         # 过程消息默认丢弃
+#       oneLineMaxChars: 80
+#       cardBodyMaxChars: 200
+#       llmEnabled: false          # 成功且含待办/失败项时才需要 LLM
+#       # alertWebhook: https://open.feishu.cn/open-apis/bot/v2/hook/运维群-token
+#
+# 或者完全交给环境变量 DSH_FEISHU_WEBHOOK / DSH_FEISHU_SECRET。
+- insert:
+    - id: feishu-digest
+      name: dsh-feishu-digest

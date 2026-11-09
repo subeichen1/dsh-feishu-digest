@@ -1,0 +1,105 @@
+# dsh-feishu-digest 配置示例
+#
+# 用法：把下面这一段追加到 profile 的 cordis.patch.yml 末尾。
+# 文件位置（Windows）：C:\Users\<你>\.dsh\profiles\<profile>\cordis.patch.yml
+# 文件位置（macOS/Linux）：~/.dsh/profiles/<profile>/cordis.patch.yml
+# 其中 <profile> 换成你实际安装的 profile（如 web、desktop、tui）；装在哪个 profile 只在哪个生效。
+#
+# 注意：本文件里所有 token / 密钥都是占位符，请替换成你自己的。
+# 数值边界：timeoutMs>=1、retries>=1、maxChars>=0、summaryMaxChars>=80、alertThreshold>=1、
+# oneLineMaxChars>=40、cardBodyMaxChars>=80、aggregateWindowMs>=1、aggregateMaxItems>=1、
+# llmTimeoutMs>=100、llmMaxTokens>=50、llmRetries>=0；整数项必须是整数。
+# 真实的 cordis.patch.yml 包含 webhook/secret，请只放在本机 profile 目录，
+# 不要提交到 Git、截图或工单；本仓库根目录的 cordis.patch.yml 只是 bundle 挂载声明，不含密钥。
+- id: feishu-digest
+  config:
+    # 必填。飞书群自定义机器人的 Webhook 地址，必须是 https。
+    # 本地 mock 可用 http://127.0.0.1:...；其余 http 地址会被判为非法。
+    # 支持单个字符串，也支持字符串数组（数组时逐个群推送，某个群失败不影响其他群）。
+    webhook:
+      - https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+      # - https://open.feishu.cn/open-apis/bot/v2/hook/yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy
+
+    # 可选。飞书后台开启「签名校验」时必填，未开启则留空或删掉这一行。
+    secret: xxxxxxxxxxxxxxxxxxxx
+
+    # 以下为 1.3 及以前的旧开关；1.4 的发送管线不再读取，保留只为兼容旧配置。
+    # outputMode: summary
+    # summaryMaxChars: 400
+
+    # 可选。告警专用 Webhook；不配置时回退到上面的业务 webhook。
+    # 业务 Webhook 整体失效时，独立告警通道仍然可用。
+    # alertWebhook: https://open.feishu.cn/open-apis/bot/v2/hook/alert-group-token
+
+    # 可选。告警 Webhook 的签名密钥；告警群和业务群不是同一个机器人时必须单独配置。
+    # 不配置时回退到 secret。
+    # alertSecret: alert-group-secret
+
+    # 可选。单次 HTTP 请求超时（毫秒），默认 8000。
+    timeoutMs: 8000
+
+    # 可选。总共最多尝试次数（含首次），默认 3。
+    retries: 3
+
+    # 可选。同一业务 Webhook 连续“最终推送失败”多少次后发「⚠️ DSH 推送告警」，默认 3。
+    # 统计的是最终失败次数，不是 HTTP 尝试次数。
+    alertThreshold: 3
+
+    # 可选。告警冷却期（毫秒），默认 300000 = 5 分钟，期间不重复告警。
+    alertCooldownMs: 300000
+
+    # 可选。指数退避的起始延迟（毫秒），默认 500 → 500、1000、2000…
+    # 单次退避最多 30 秒；服务端 Retry-After 更长时优先按服务端等待。
+    retryBaseDelayMs: 500
+
+    # 可选。是否为子代理会话也推送，默认 false（一次任务只推一条，不刷屏）。
+    includeSubagents: false
+
+    # ---------------------------------------------------------------------
+    # 通知精简管线（1.4）
+    # ---------------------------------------------------------------------
+
+    # 可选。progress 类过程消息默认丢弃；设为 false 可放开。
+    dropProgress: true
+
+    # 可选。命中任一关键词就走卡片（否则成功消息走一行型）。
+    # 支持字符串（|、逗号或换行分隔）或字符串数组。
+    # todoKeywords: 必须|需要你|待办|仍为空|可以推翻|建议|剩余|没动|风险
+
+    # 可选。一行型与卡片正文的硬上限。
+    oneLineMaxChars: 80
+    cardBodyMaxChars: 200
+
+    # 可选。一行型聚合窗口与条数上限：30 分钟或满 5 条时合并成一条汇总卡。
+    aggregateWindowMs: 1800000
+    aggregateMaxItems: 5
+
+    # 可选。发送前把原文归档；文件名为 sha256(原文)[:8].md，重复写入幂等。
+    archiveEnabled: true
+    # archiveDir: C:\Users\<你>\.dsh\feishu-digest\archive
+    # 可选。归档的对外 URL 前缀；配置后才显示「查看原文」按钮。
+    # archiveBaseUrl: https://example.com/feishu-archive
+
+    # 可选。只有“成功且含待办关键词或失败项”的卡片才会调用 LLM；关闭时全走本地兜底。
+    llmEnabled: false
+    # llmProvider: deepseek
+    # llmModel: deepseek-chat
+    llmTimeoutMs: 10000
+    llmMaxTokens: 400
+    llmRetries: 1
+
+# ---------------------------------------------------------------------------
+# 不想把 webhook 写进配置文件？也可以用环境变量兜底（优先级：config > 环境变量）：
+#
+#   DSH_FEISHU_WEBHOOK        或 FEISHU_WEBHOOK        或 FEISHU_BOT_WEBHOOK
+#   DSH_FEISHU_SECRET         或 FEISHU_WEBHOOK_SECRET 或 FEISHU_BOT_SECRET
+#   DSH_FEISHU_ALERT_WEBHOOK  或 FEISHU_ALERT_WEBHOOK
+#   DSH_FEISHU_ALERT_SECRET   或 FEISHU_ALERT_SECRET
+#
+# Windows PowerShell（当前会话）：
+#   $env:DSH_FEISHU_WEBHOOK = "https://open.feishu.cn/open-apis/bot/v2/hook/xxxx"
+#   $env:DSH_FEISHU_SECRET  = "你的签名密钥"
+#
+# 想永久生效，可以把上面两行加进 PowerShell 的 $PROFILE，
+# 或者写进 DSH 的 .env 文件：C:\Users\<你>\.dsh\.env
+# ---------------------------------------------------------------------------

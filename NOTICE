@@ -1,0 +1,35 @@
+dsh-feishu-digest
+Copyright (c) 2026 dsh-feishu-digest contributors
+
+This project is released under the MIT License. See LICENSE for the full text.
+
+Brand and trademark notice
+--------------------------
+
+The MIT License grants copyright permissions for the software code. It does not
+grant trademark rights, and it is silent on patent rights. It also does not
+grant permission to use the project name "dsh-feishu-digest", its logo, or other
+brand identifiers in a way that suggests endorsement by, or affiliation with,
+the upstream project.
+
+Forks and derivative works are welcome. If you redistribute a modified version,
+please:
+
+- keep the copyright, license and this NOTICE file;
+- make it clear that your version is a fork, not the upstream project;
+- do not use the upstream project name or logo as the name or logo of your
+  distribution without permission; and
+- do not claim that the upstream maintainers endorse your distribution.
+
+This notice is informational. It does not add restrictions to the MIT License
+and does not change the rights granted by it.
+
+A note on "copy protection"
+---------------------------
+
+MIT is a permissive open-source license: anyone may copy, modify and redistribute
+the code, including commercially, as long as the copyright and license notices
+are kept. This project intentionally does not use code obfuscation, license
+activation, DRM or a "no-copy" technical measure. If you need to prevent
+commercial copying or rebranding, MIT is not the right license; choose a
+source-available license or keep the core logic in a private package/service.

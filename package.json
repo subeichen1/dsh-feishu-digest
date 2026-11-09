@@ -1,0 +1,63 @@
+{
+  "name": "dsh-feishu-digest",
+  "version": "1.4.1",
+  "description": "DeepSeek Harness 插件：把任务结果压缩成结论/产物/待办短卡片，再推送到飞书群自定义机器人",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "config.example.yml",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE",
+    "test/sign.test.js",
+    "test/listener.test.js",
+    "test/pipeline.test.js"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "test": "node test/sign.test.js && node test/listener.test.js && node test/pipeline.test.js"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "plugin",
+    "feishu",
+    "lark",
+    "notification",
+    "webhook",
+    "summary"
+  ],
+  "author": "dsh-feishu-digest contributors",
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/subeichen1/dsh-feishu-digest.git"
+  },
+  "homepage": "https://github.com/subeichen1/dsh-feishu-digest#readme",
+  "bugs": {
+    "url": "https://github.com/subeichen1/dsh-feishu-digest/issues"
+  }
+}
