@@ -372,7 +372,7 @@ async function main() {
       if (savedBot !== undefined) process.env.FEISHU_BOT_WEBHOOK = savedBot
     }
     assert.ok(logs.some((line) => line.includes('[dsh-feishu-digest]') && line.includes('未配置 webhook')))
-    assert.ok(logs.some((line) => line.includes('loaded v1.4.0')))
+    assert.ok(logs.some((line) => line.includes('loaded v2.0.0')))
   })
 
   await checkAsync('webhook 为字符串数组时逐个发送（R8）', async () => {
@@ -412,9 +412,9 @@ async function main() {
     )
     assert.equal(received[0].parsed.msg_type, 'interactive')
     const body = received[0].parsed.card.elements.find((item) => item.tag === 'div').text.content
-    assert.ok(body.includes('两个群都发'))
-    assert.match(received[0].parsed.card.header.title.content, /1 个任务完成/)
-    assert.ok(logs.some((line) => line.includes('loaded v1.4.0') && line.includes('webhook=2 个')))
+    assert.ok(body.includes('结果正文'))
+    assert.match(received[0].parsed.card.header.title.content, /两个群都发/)
+    assert.ok(logs.some((line) => line.includes('loaded v2.0.0') && line.includes('webhook=2 个')))
   })
 
   // -------------------------------------------------------------------------

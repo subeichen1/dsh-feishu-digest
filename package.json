@@ -1,7 +1,7 @@
 {
   "name": "dsh-feishu-digest",
-  "version": "1.4.1",
-  "description": "DeepSeek Harness 插件：把任务结果压缩成结论/产物/待办短卡片，再推送到飞书群自定义机器人",
+  "version": "2.0.0",
+  "description": "DeepSeek Harness 插件：提取 Agent 回复里的重点（加粗/标题/根因/修复/验证/风险），推送成飞书重点卡片",
   "type": "module",
   "main": "index.js",
   "exports": {

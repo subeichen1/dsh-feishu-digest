@@ -12,11 +12,13 @@ import {
   createNotifyPipeline,
   digestFromText,
   extractCommit,
+  extractHighlights,
   fallbackClean,
   hasTodoKeyword,
   normalizeConfig,
   parseDigestJson,
   renderCardBody,
+  renderHighlights,
   renderOneLine,
   routeNotifyEvent,
 } from '../index.js'
@@ -102,6 +104,65 @@ async function main() {
     assert.equal(hasTodoKeyword('全部完成'), false)
   })
 
+  console.log('\n[2/6] 重点提取（2.0 核心）')
+
+  check('加粗标题与其下的要点被优先保留，过程叙述被丢弃', () => {
+    const text = [
+      '我先梳理一下代码，然后再说结论。',
+      'I could mention JSON5, but the main reason is JSON.parse rejects single quotes.',
+      '**结论**',
+      'auto-effort 插件写入了不支持的 reasoningEffort 值，已定位并修复。',
+      '**根因**',
+      '`dsh-agent-loop/lib/index.js:1010` 把 UI 档位 `max` 直接透传给只支持 low/medium/high 的 provider，触发 `UNSUPPORTED_REASONING_EFFORT`。',
+      '**修复**',
+      '- `dsh-agent-loop/lib/index.js`：新增 `normalizeReasoningEffort()`，把 `max` 映射为 `high`',
+      '- `auto-effort/lib/index.js`：读取 `capabilities.reasoningEffort` 后再写配置',
+      '顺便说一句，这个改动很小。',
+    ].join('\n')
+    const highlights = extractHighlights(text)
+    assert.equal(highlights.headline, 'auto-effort 插件写入了不支持的 reasoningEffort 值，已定位并修复。')
+    assert.deepEqual(highlights.blocks.map((block) => block.title), ['结论', '根因', '修复'])
+    assert.ok(highlights.blocks[1].items[0].includes('dsh-agent-loop/lib/index.js:1010'))
+    assert.ok(highlights.blocks[2].items.length >= 2)
+    const rendered = renderHighlights(highlights)
+    assert.ok(!rendered.includes('我先梳理'))
+    assert.ok(!rendered.includes('I could mention'))
+    assert.ok(!rendered.includes('顺便说一句'))
+  })
+
+  check('Markdown 标题、表格与短代码块也能归纳', () => {
+    const text = [
+      '## 验证',
+      'npm test：42 项全部通过',
+      '| 项目 | 结果 |',
+      '| --- | --- |',
+      '| 单元测试 | 42 通过 |',
+      '```bash',
+      'npm test',
+      '```',
+    ].join('\n')
+    const highlights = extractHighlights(text)
+    assert.ok(highlights.blocks.some((block) => block.title === '验证'))
+    assert.ok(highlights.blocks.some((block) => block.items.some((item) => item.includes('42 通过'))))
+    assert.ok(highlights.blocks.some((block) => block.items.some((item) => item.includes('npm test'))))
+
+    // 行内加粗标签（**根因**：… / **结论：** …）也要当成小节标题。
+    const labeled = extractHighlights(['**根因**：`max` 被直接透传', '**结论：** 已修复并验证'].join('\n'))
+    assert.deepEqual(labeled.blocks.map((block) => block.title), ['根因', '结论'])
+  })
+
+  check('renderHighlights 不截断加粗标记且遵守长度上限', () => {
+    const highlights = { headline: 'x', blocks: [{ title: '修复', items: ['很长的内容'.repeat(80)] }] }
+    const body = renderHighlights(highlights, 300)
+    assert.ok(Array.from(body).length <= 300)
+    assert.equal((body.match(/\*\*/g) || []).length % 2, 0)
+
+    // 行内加粗正好被截断时，不能留下单个 ** 字面量。
+    const inlineBold = { headline: 'x', blocks: [{ title: '根因', items: [`**${'很长的内容'.repeat(80)}** 结尾`] }] }
+    const clipped = renderHighlights(inlineBold, 120)
+    assert.equal((clipped.match(/\*\*/g) || []).length % 2, 0)
+  })
+
   console.log('\n[2/6] Digest 与卡片')
 
   check('本地 Digest 保留结论、产物、行动与风险', () => {
@@ -178,11 +239,11 @@ async function main() {
     assert.deepEqual(routeNotifyEvent(event({ status: 'warning' })), { action: 'card', color: 'orange', useLlm: false })
   })
 
-  check('success 无待办走一行，有待办/失败项走蓝色 LLM 卡片', () => {
-    assert.equal(routeNotifyEvent(event({ body: '全部完成。' })).action, 'line')
-    assert.deepEqual(routeNotifyEvent(event({ body: '需要你确认配置。' })), { action: 'card', color: 'blue', useLlm: true })
-    assert.deepEqual(routeNotifyEvent(event({ body: 'P3 已修复；P4-2 修复失败，原因：上游 500。' })), { action: 'card', color: 'blue', useLlm: true })
-    assert.equal(routeNotifyEvent(event({ body: '测试通过；失败 0 项。' })).action, 'line')
+  check('2.0 默认所有结束回合都走卡片，compactMode 才回到一行型', () => {
+    assert.deepEqual(routeNotifyEvent(event({ body: '全部完成。' })), { action: 'card', color: 'blue', useLlm: false })
+    assert.deepEqual(routeNotifyEvent(event({ body: '需要你确认配置。' })), { action: 'card', color: 'blue', useLlm: false })
+    assert.deepEqual(routeNotifyEvent(event({ body: '全部完成。' }), { compactMode: true }), { action: 'line' })
+    assert.deepEqual(routeNotifyEvent(event({ body: '需要你确认配置。' }), { compactMode: true, llmEnabled: true }), { action: 'card', color: 'blue', useLlm: true })
   })
 
   console.log('\n[4/6] 聚合与归档')
@@ -227,10 +288,10 @@ async function main() {
 
   console.log('\n[5/6] 管线路由与降级')
 
-  await checkAsync('3 条 success 无待办只发 1 条汇总卡', async () => {
+  await checkAsync('compactMode 下 3 条 success 无待办只发 1 条汇总卡', async () => {
     const sent = []
     const pipeline = createNotifyPipeline({
-      config: normalizeConfig({ webhook: 'https://example.com/hook' }),
+      config: normalizeConfig({ webhook: 'https://example.com/hook', compactMode: true }),
       send: async (message) => { sent.push(message) },
       archive: fakeArchive,
     })
@@ -246,7 +307,7 @@ async function main() {
     assert.ok(!body.includes('自动摘要'))
   })
 
-  await checkAsync('有待办时走 LLM 卡片，正文不超过 200 字', async () => {
+  await checkAsync('有待办时走 LLM 卡片，正文不超过配置上限', async () => {
     const sent = []
     const llm = {
       async *stream() {
@@ -255,7 +316,7 @@ async function main() {
       },
     }
     const pipeline = createNotifyPipeline({
-      config: normalizeConfig({ webhook: 'https://example.com/hook', llmEnabled: true, llmProvider: 'p', llmModel: 'm' }),
+      config: normalizeConfig({ webhook: 'https://example.com/hook', llmEnabled: true, llmProvider: 'p', llmModel: 'm', cardBodyMaxChars: 200 }),
       send: async (message) => { sent.push(message) },
       archive: fakeArchive,
       llm,
@@ -282,7 +343,7 @@ async function main() {
     assert.equal(sent.length, 1)
     const body = sent[0].card.elements.find((item) => item.tag === 'div').text.content
     assert.ok(!body.includes('自动摘要'))
-    assert.ok(body.includes('▸ 需要你'))
+    assert.ok(body.includes('需要你确认配置'))
   })
 
   await checkAsync('失败消息走红色详版卡片', async () => {
@@ -321,7 +382,11 @@ async function main() {
     const config = normalizeConfig({ webhook: 'https://example.com/hook' })
     assert.equal(config.dropProgress, true)
     assert.equal(config.oneLineMaxChars, 80)
-    assert.equal(config.cardBodyMaxChars, 200)
+    assert.equal(config.cardBodyMaxChars, 1600)
+    assert.equal(config.highlightMaxSections, 8)
+    assert.equal(config.highlightMaxItems, 4)
+    assert.equal(config.highlightItemChars, 240)
+    assert.equal(config.compactMode, false)
     assert.equal(config.aggregateWindowMs, 1_800_000)
     assert.equal(config.aggregateMaxItems, 5)
     assert.equal(config.archiveEnabled, true)

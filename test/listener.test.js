@@ -129,7 +129,7 @@ async function main() {
   console.log('[1/9] 配置归一化与校验')
 
   check('VERSION 与 package.json 对齐', () => {
-    assert.equal(VERSION, '1.4.0')
+    assert.equal(VERSION, '2.0.0')
   })
 
   check('空字符串 webhook 会回退到环境变量', () => {
@@ -510,7 +510,7 @@ async function main() {
 
   const { server, received, port } = await startServer()
   try {
-    await checkAsync('apply 默认走精简管线，而不是全文', async () => {
+    await checkAsync('apply 默认走重点卡片，而不是全文', async () => {
       received.length = 0
       const { ctx } = createCtx()
       apply(ctx, {
@@ -527,8 +527,9 @@ async function main() {
       for (let i = 0; i < 100 && received.length < 1; i += 1) await sleep(20)
       assert.equal(received.length, 1, `应收到 1 次请求，实际 ${received.length}`)
       assert.equal(received[0].parsed.msg_type, 'interactive')
+      assert.match(received[0].parsed.card.header.title.content, /摘要集成/)
       const body = received[0].parsed.card.elements.find((item) => item.tag === 'div').text.content
-      assert.ok(body.includes('摘要集成'))
+      assert.ok(body.includes('全部通过'))
       assert.ok(!body.includes('无关内容。'.repeat(100)), '精简后不应包含整段无关内容')
       assert.ok(!body.includes('自动摘要，原文'), '不应再透传旧摘要尾注')
     })

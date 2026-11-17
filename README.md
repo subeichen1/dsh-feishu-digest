@@ -1,42 +1,38 @@
 # dsh-feishu-digest
 
-把 DeepSeek Harness（DSH）每一次任务的结束结果，经过**通知精简管线**压缩成一行消息或短卡片，再推送到你的飞书群。
+把 DeepSeek Harness（DSH）每一次任务的结束结果，**提取其中的重点内容**，推送到你的飞书群。
 
-成功的任务默认聚合成一行（30 分钟窗口或满 5 条汇总）；有待办、失败或错误的任务发卡片，只保留「结论 → 产物 → 需要你 → 风险」。原文全文在发送前归档到本地，卡片底部可挂「查看原文」。不需要公网 IP，不需要开服务，装好、填一个 Webhook 地址就能用。
+2.0 起默认每个回合都发一张「重点卡片」：优先保留 Agent 回复里的**加粗文本**、**Markdown 标题**及其下属要点，其次是根因 / 修复 / 验证 / 风险 / 待办这类真正解决问题的信息；寒暄、过程叙述、长代码块等噪音会被丢弃。原文全文在发送前归档到本地，卡片底部可挂「查看原文」。不需要公网 IP，不需要开服务，装好、填一个 Webhook 地址就能用。
 
-默认不调用模型；只有“成功且含待办关键词或失败项”的卡片路径才会尝试 LLM 压缩，LLM 未配置或超时会自动退回本地兜底。
+默认不调用模型，靠本地规则提取重点；想让模型再压一遍可以开启 `llmEnabled`，LLM 未配置或超时会自动退回本地提取。
 
-成功、无待办时只发一行，多个任务会聚合：
-
-```
-✅ 修复登录接口的空指针 —— 成功 ｜ 任务完成飞书传回·审计并修复 ｜ 3.0 分钟
-```
-
-有待办或失败时发短卡片，卡片头部是任务名，下面依次是项目/对话、结论、产物、需要你、风险：
+一张典型的重点卡片：
 
 ```
-✅ 修复登录接口的空指针
-项目：任务完成飞书传回 ｜ 对话：审计并修复
-结论：登录接口空指针已修复，回归测试通过
-▸ 产物
-· src/auth/login.ts
-▸ 需要你
-· 确认是否补一条边界场景测试
-▸ 风险
-· 真实设备未复测
+✅ 修复 auto-effort 的 reasoningEffort 不兼容
+项目：任务完成飞书传回 ｜ 对话：插件排障
+**结论**
+· auto-effort 插件写入了不支持的 reasoningEffort 值，已定位并修复。
+**根因**
+· `dsh-agent-loop/lib/index.js:1010` 把 UI 档位 `max` 直接透传给只支持 low/medium/high 的 provider，触发 `UNSUPPORTED_REASONING_EFFORT`。
+**修复**
+· 新增 `normalizeReasoningEffort()`，把 `max` 映射为 `high`
+**验证**
+· `npm test`：42 项全部通过
 [查看原文]
 ```
+
+失败任务同样是重点卡片，只是头部变红、状态为 ❌：
 
 ```
 ❌ 把支付模块拆成独立服务
 项目：任务完成飞书传回 ｜ 对话：支付模块重构
-结论：构建失败：类型错误
-▸ 产物
-· （无）
-▸ 需要你
-· 无需操作
-▸ 风险
-· 无法发布
+**结论**
+· 构建失败：类型错误，无法发布。
+**根因**
+· `src/pay/order.ts:88` 的 `amount` 可能为 `undefined`。
+**待办**
+· 补齐空值校验后重新构建。
 ```
 
 ---
@@ -48,6 +44,7 @@
 - [从 1.1 升级到 1.2](#从-11-升级到-12)
 - [从 1.2 升级到 1.3](#从-12-升级到-13)
 - [从 1.3 升级到 1.4](#从-13-升级到-14)
+- [从 1.4 升级到 2.0](#从-14-升级到-20)
 - [前置条件](#前置条件)
 - [第一步：创建飞书自定义机器人](#第一步创建飞书自定义机器人)
 - [第二步：安装插件](#第二步安装插件)
@@ -73,8 +70,8 @@
 | 任务结束即推送 | 订阅 DSH 的 `turn/end` 事件，回合结束的同一刻发送，不轮询、不攒批 |
 | 三级名称 | 卡片依次显示 `项目`（cwd 目录名）、`对话`（会话最新标题）、`任务名`（本回合首条人类 prompt） |
 | 成功/失败都推 | `completed` 用 ✅，`error` 用 ❌，取消/阻塞/超限/中断用 ⏸️ |
-| 精简管线 | 成功无待办 → 一行型（30 分钟/5 条聚合）；失败/待办/含失败项 → `interactive` 卡片；原文先归档 |
-| 默认精简 | 本地规则路由，不调用模型；失败/待办卡片优先保留结论、失败原因、待办与风险，丢弃 how-to 和元信息 |
+| 精简管线 | 每个回合发「重点卡片」：加粗文本 / Markdown 标题及其下属要点优先，过程叙述与长代码丢弃；原文先归档 |
+| 重点界定 | 加粗 > 标题下的正文 > 根因/修复/验证/风险/待办 > 文件路径/命令/错误码；寒暄与过程叙述直接丢弃 |
 | 原文可查 | 发送前全文归档到 `~/.dsh/feishu-digest/archive`，配 `archiveBaseUrl` 后卡片带「查看原文」 |
 | 签名校验 | 飞书机器人开启「签名校验」时，自动附加 `timestamp` + `sign` |
 | 失败重试 | 网络错误 / HTTP 429 / 5xx / 飞书 `code=9499` 才重试；尊重 `Retry-After`，指数退避最多 30 秒、最多 3 次 |
@@ -139,6 +136,19 @@
 - **原文归档**：发送前把全文写到 `~/.dsh/feishu-digest/archive/<hash>.md`，卡片上的「查看原文」按钮指向 `archiveBaseUrl`；不配 base URL 时仍归档，但按钮不出现。
 - **`outputMode` / `summaryMaxChars`**：1.4 的发送管线不再读取这两个旧开关；原文在归档里，飞书只发精简结果。保留字段只为兼容旧配置。
 - **测试**：26 + 51 + 22 = 99 项。
+
+---
+
+## 从 1.4 升级到 2.0
+
+2.0 是一次**内容策略重写**：不再把 Agent 回复压成「结论 / 产物 / 需要你 / 风险」四行短摘要，而是按「什么是重要的」来提取。旧版最大的问题不是不够短，而是**不知道什么重要**——它会把「结论：结论」或半截代码路径当作要点，真正解决问题的根因和修复反而被截掉。
+
+- **重点提取（`extractHighlights`）**：按行解析 Markdown。整行加粗 / `#` 标题会开启一个小节，加粗行下面的列表与段落归入该小节；`结论：`、`根因：`、`修复：` 这类标签行同样作为小节标题。每个小节按信息量给要点打分：加粗、行内代码、URL、文件路径、数字、解决类关键词加分；「我先梳理一下」「顺便说一句」这类过程叙述减分并直接丢弃。
+- **默认每回合都发卡片**：1.4 的「成功且无待办只发一行」会把正文完全丢掉，2.0 默认不再这样。需要旧行为时显式设置 `compactMode: true`（此时 30 分钟/5 条聚合仍然生效）。
+- **正文更长**：`cardBodyMaxChars` 默认从 200 提高到 1600，足够放下根因、修复、验证几节；仍受 20KB 请求体硬上限保护。
+- **新增配置**：`highlightMaxSections`（默认 8）、`highlightMaxItems`（默认 4）、`highlightItemChars`（默认 240）、`compactMode`（默认 false）。
+- **LLM 提示词重写**：如果开启 `llmEnabled`，模型现在被要求输出 `{"headline":"…","sections":[{"title":"根因","items":["…"]}]}`，并明确「文件路径、函数名、命令、错误码属于重要证据，不要因为看起来像实现细节就删掉」。
+- **测试**：26 + 51 + 25 = 102 项。
 
 ---
 
@@ -277,10 +287,10 @@ dsh plugin --profile web add dsh-feishu-digest
 
 ### 方式 D：离线分发包（tgz，推荐发给同事）
 
-仓库根目录的 `dsh-feishu-digest-1.4.0.tgz` 由 `npm pack` 生成，可直接发给别人安装，无需先发 npm：
+仓库根目录的 `dsh-feishu-digest-2.0.0.tgz` 由 `npm pack` 生成，可直接发给别人安装，无需先发 npm：
 
 ```powershell
-dsh plugin --profile web add .\dsh-feishu-digest-1.4.0.tgz
+dsh plugin --profile web add .\dsh-feishu-digest-2.0.0.tgz
 ```
 
 包内已包含 `index.js`、`cordis.patch.yml`、`README.md`、`CHANGELOG.md`、`config.example.yml`、`LICENSE`、`NOTICE`、`test/sign.test.js`、`test/listener.test.js`、`test/pipeline.test.js` 与 `package.json`，共 11 个文件。对方机器没有 pnpm 时，也可以把 tgz 解开后把 `package\` 目录按「方式 B」放到 profile 的 `node_modules\dsh-feishu-digest`。
@@ -304,10 +314,12 @@ macOS/Linux:  ~/.dsh/profiles/web/cordis.patch.yml
 - id: feishu-digest
   config:
     webhook: https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-    # 1.4 默认：成功无待办走一行/聚合，失败或待办走短卡片
+    # 2.0 默认：每个回合发一张「重点卡片」，优先加粗文本/标题下的要点
     dropProgress: true
-    oneLineMaxChars: 80
-    cardBodyMaxChars: 200
+    cardBodyMaxChars: 1600
+    highlightMaxSections: 8
+    highlightMaxItems: 4
+    highlightItemChars: 240
 ```
 
 开了签名校验就再加一行：
@@ -355,7 +367,7 @@ macOS/Linux:  ~/.dsh/profiles/web/cordis.patch.yml
 **怎么确认加载成功？** 设置环境变量 `DSH_FEISHU_DEBUG=1` 再启动，stderr 会打印：
 
 ```
-[dsh-feishu-digest] loaded v1.4.0（webhook=1 个，告警=同业务 webhook，签名=关闭，管线=本地，超时=8000ms，最多尝试=3 次）
+[dsh-feishu-digest] loaded v2.0.0（webhook=1 个，告警=同业务 webhook，签名=关闭，管线=本地，超时=8000ms，最多尝试=3 次）
 [dsh-feishu-digest] 检测到任务结束：✅ 任务完成（session=session-… turn=1 耗时=42.7 秒）
 [dsh-feishu-digest] 推送成功（第 1/3 次）→ https://open.feishu.cn/open-apis/bot…
 ```
@@ -375,15 +387,19 @@ macOS/Linux:  ~/.dsh/profiles/web/cordis.patch.yml
 | `summaryMaxChars` | number | `400` | **1.4 起发送管线不再读取**，同上；保留给旧版 `composeMessageText` 调用方 |
 | `maxChars` | number | `8000` | **1.4 起发送管线不再读取**，同上；请求体仍有 20KB 硬上限 |
 | `dropProgress` | boolean | `true` | `type=progress` 的过程消息默认丢弃；`false` 时按普通消息处理 |
-| `todoKeywords` | string \| string[] | `必须/需要你/待办/仍为空/可以推翻/建议/剩余/没动/风险` | 命中任一词就走卡片（而不是一行型）；字符串用 `|`、逗号或换行分隔 |
-| `oneLineMaxChars` | number | `80` | 一行型硬上限（40–200），超出截断 |
-| `cardBodyMaxChars` | number | `200` | 卡片正文硬上限（80–500） |
-| `aggregateWindowMs` | number | `1800000` | 一行型聚合窗口，默认 30 分钟 |
-| `aggregateMaxItems` | number | `5` | 一行型缓冲满多少条立即 flush |
+| `todoKeywords` | string \| string[] | `必须/需要你/待办/仍为空/可以推翻/建议/剩余/没动/风险` | 只在 `compactMode: true` 时用来判断“是否走卡片”；2.0 默认所有回合都发卡片，不再依赖关键词 |
+| `oneLineMaxChars` | number | `80` | 一行型硬上限（40–200），超出截断；只在 `compactMode` 或卡片发送失败降级时使用 |
+| `cardBodyMaxChars` | number | `1600` | 卡片正文硬上限（80–8000）；2.0 的重点卡片需要放根因/修复/验证，默认值比 1.x 大 |
+| `highlightMaxSections` | number | `8` | 重点卡片最多保留几个小节（1–20），按信息量排序 |
+| `highlightMaxItems` | number | `4` | 每个小节最多保留几条要点（1–10） |
+| `highlightItemChars` | number | `240` | 单条要点最大字符数（40–1000） |
+| `compactMode` | boolean | `false` | 设成 `true` 回到 1.4 的「成功且无待办 → 一行型 + 聚合」模式；默认 false，每回合都发重点卡片 |
+| `aggregateWindowMs` | number | `1800000` | 一行型聚合窗口，默认 30 分钟（仅 `compactMode` 有效） |
+| `aggregateMaxItems` | number | `5` | 一行型缓冲满多少条立即 flush（仅 `compactMode` 有效） |
 | `archiveEnabled` | boolean | `true` | 发送前是否把原文写入归档 |
 | `archiveDir` | string | `~/.dsh/feishu-digest/archive` | 归档目录；文件名为 `sha256(原文)[:8].md`，重复写入幂等 |
 | `archiveBaseUrl` | string | `''` | 归档对外 URL 前缀；配置后才生成「查看原文」按钮 |
-| `llmEnabled` | boolean | `false` | 是否允许“成功且含待办/失败项”的卡片走 LLM 压缩；关闭时全走本地兜底 |
+| `llmEnabled` | boolean | `false` | 是否额外调用 LLM 做一次重点提取；关闭时全走本地 `extractHighlights`，效果已经可用 |
 | `llmProvider` | string | `''` | DSH LLM provider id，例如 `deepseek`；`llmEnabled=true` 时必填 |
 | `llmModel` | string | `''` | 模型 id；`llmEnabled=true` 时必填 |
 | `llmTimeoutMs` | number | `10000` | LLM 单次超时（最小 100ms） |
@@ -396,7 +412,7 @@ macOS/Linux:  ~/.dsh/profiles/web/cordis.patch.yml
 | `retryBaseDelayMs` | number | `500` | 指数退避起始延迟，第 n 次重试前等待 `base × 2^(n-1)`，单次最多 30 秒 |
 | `includeSubagents` | boolean | `false` | 是否也给子代理（subagent / fork 出来的会话）推送。默认关闭，避免一次任务刷出好几条 |
 
-数值边界会在加载时校验：`timeoutMs >= 1`、`retries >= 1`、`maxChars >= 0`、`summaryMaxChars >= 80`、`alertThreshold >= 1`、`alertCooldownMs >= 0`、`retryBaseDelayMs >= 0`、`oneLineMaxChars >= 40`、`cardBodyMaxChars >= 80`、`aggregateWindowMs >= 1`、`aggregateMaxItems >= 1`、`llmTimeoutMs >= 100`、`llmMaxTokens >= 50`、`llmRetries >= 0`；整数项还必须是整数。越界会报 `invalid config` 并让该插件条目加载失败，而不是静默改成默认值。`oneLineMaxChars`/`cardBodyMaxChars`/`llmMaxTokens` 还有上限，归一化时会夹紧。
+数值边界会在加载时校验：`timeoutMs >= 1`、`retries >= 1`、`maxChars >= 0`、`summaryMaxChars >= 80`、`alertThreshold >= 1`、`alertCooldownMs >= 0`、`retryBaseDelayMs >= 0`、`oneLineMaxChars >= 40`、`cardBodyMaxChars >= 80`、`highlightMaxSections >= 1`、`highlightMaxItems >= 1`、`highlightItemChars >= 40`、`aggregateWindowMs >= 1`、`aggregateMaxItems >= 1`、`llmTimeoutMs >= 100`、`llmMaxTokens >= 50`、`llmRetries >= 0`；整数项还必须是整数。越界会报 `invalid config` 并让该插件条目加载失败，而不是静默改成默认值。`oneLineMaxChars`（上限 200）、`cardBodyMaxChars`（上限 8000）、`highlightMaxSections`（上限 20）、`highlightMaxItems`（上限 10）、`highlightItemChars`（上限 1000）、`llmMaxTokens`（上限 2000）在归一化时会夹紧。
 
 完整示例见 [config.example.yml](./config.example.yml)（里面全是占位符，可以直接抄）。
 
@@ -436,32 +452,28 @@ dsh web
 
 ## 消息格式说明
 
-所有消息都先经过 `createNotifyPipeline`，只有三种出口：
+2.0 的所有消息都先经过 `createNotifyPipeline`，有三种出口：
 
-**1. 一行型（成功且无待办）**
+**1. 重点卡片（默认，每个回合一张）**
+
+```
+<图标> <任务名>
+项目：<项目> ｜ 对话：<对话>
+**<小节标题>**
+· <要点>
+· <要点>
+[查看原文]
+```
+
+正文由 `extractHighlights` 提取：整行加粗或 `#` 标题会开启一个小节，小节下的列表与段落成为要点；`结论：`、`根因：` 这类标签行同样当小节标题。每个小节按信息量挑前 `highlightMaxItems` 条（默认 4），整张卡片正文上限 `cardBodyMaxChars`（默认 1600 字）。失败卡片红色、warning 橙色、其余蓝色；配了 `archiveBaseUrl` 时带「查看原文」。
+
+**2. 一行型（仅在 `compactMode: true` 时）**
 
 ```
 ✅ <任务名> —— 成功 ｜ <项目>·<对话> ｜ <N.N> 分钟
 ```
 
-硬上限 `oneLineMaxChars`（默认 80 字）。不会立即发送，而是按 `(项目, 对话)` 进入缓冲，`aggregateWindowMs`（默认 30 分钟）到期或满 `aggregateMaxItems`（默认 5 条）时，合成一条「📦 N 个任务完成」汇总卡。
-
-**2. 卡片型（失败/错误、warning、成功但含待办关键词或失败项）**
-
-```
-<图标> <任务名>
-项目：<项目> ｜ 对话：<对话>
-结论：<一句话结论>
-▸ 产物
-· <commit / 链接 / 变更文件数>
-▸ 需要你
-· <待填配置 / 待决策 / 待确认>
-▸ 风险
-· <风险或遗留>
-[查看原文]
-```
-
-`▸ 需要你` 为空显示“无需操作”；`▸ 风险` 为空整行省略。卡片正文硬上限 `cardBodyMaxChars`（默认 200 字）。失败卡片红色、warning 橙色、成功待办/含失败项蓝色。
+硬上限 `oneLineMaxChars`（默认 80 字）。按 `(项目, 对话)` 进入缓冲，`aggregateWindowMs`（默认 30 分钟）到期或满 `aggregateMaxItems`（默认 5 条）时，合成一条「📦 N 个任务完成」汇总卡（每条任务附第一条重点）。
 
 **3. 文本兜底 / 告警**
 
@@ -500,7 +512,17 @@ webhook：https://...
 
 对话名是**项目里这条对话的总名称**，贯穿多个回合，不随单次任务变化；它取最新标题，因此用户重命名或标题服务刷新后会跟着更新，但不会退化成某次任务的 prompt。任务名才逐回合变化。注入的插件上下文（`source.kind !== 'user'`）不会污染任务名。
 
-### 本地摘要规则（1.3 及以前，1.4 发送管线不再使用）
+### 2.0 重点提取规则（默认卡片）
+
+`extractHighlights(text)` 的目标不是“变短”，而是“只留重要的”。它按 Markdown 结构逐行解析：
+
+1. **小节来源**：整行加粗（`**标题**`）、`#`/`##`/`###` 标题、`结论：`/`根因：`/`修复：`/`验证：`/`风险：`/`待办：` 这类标签行都会开启一个小节；没有标题的段落进入无标题小节（最多 2 条）。
+2. **要点来源**：小节下的无序/有序列表项、普通段落（按句号/分号切句）、表格行（转成 `a ｜ b`）、不超过 260 字的短代码块。
+3. **打分**：加粗 +8、行内代码 +4、URL +3、文件路径/扩展名 +3、解决类关键词（修复/根因/验证/结论/失败/报错…）+4、含数字 +1；以「我先」「让我」「顺便」「接下来」等过程叙述开头 -5，长度 <10 -3，噪音标题（说明/背景/参考…）-6。
+4. **取舍**：每个小节按分数取前 `highlightMaxItems` 条；只要存在正分小节，全是过程叙述的负分小节会被整体丢弃；小节超过 `highlightMaxSections` 时保留得分高的。**文件路径、函数名、命令、错误码不会被当成“实现细节”删掉**——它们正是解决问题的证据。
+5. **兜底**：如果整段只有长代码/分隔线，会退回按句取前几条，保证不会发出空卡片。
+
+### 本地摘要规则（1.3 及以前，1.4 / 2.0 发送管线不再使用）
 
 `outputMode: summary` 时，旧版 `composeMessageText` 会在本地做“结果要点”摘要；1.4 的发送管线直接输出一行/卡片，不再调用这个函数。下面保留给仍在使用导出函数的调用方参考：
 
@@ -514,7 +536,8 @@ webhook：https://...
 
 ### 截断规则（R6）
 
-- `full` 模式先按 `maxChars`（默认 8000 字符）截断正文，追加：
+- **2.0 重点卡片**：正文按 `cardBodyMaxChars`（默认 1600 字符）按整行裁剪，最后一行空间不足 16 字时直接省略，保证不会把 `**加粗标记**` 截成半截。完整原文在归档文件里。
+- 旧文本模式（`outputMode: full`）先按 `maxChars`（默认 8000 字符）截断正文，追加：
 
   ```
   ... [已截断，原长 12345 字符]
@@ -522,8 +545,8 @@ webhook：https://...
 
   `N` 是**原始**字符数（按码点算，emoji 不会被劈开）。
 
-- `summary` 模式先按 `summaryMaxChars` 摘要；摘要标记是 `... [自动摘要，原文 N 字符]`。
-- 两种模式最后都按**请求体 20KB** 硬上限做二次收缩：如果头部 + 正文 + 标记的 JSON 字节数超过 20480，
+- 旧 `summary` 模式先按 `summaryMaxChars` 摘要；摘要标记是 `... [自动摘要，原文 N 字符]`。
+- 所有出口最后都按**请求体 20KB** 硬上限做二次收缩：如果头部 + 正文 + 标记的 JSON 字节数超过 20480，
   会二分查找出还能放下多少字符并再次追加截断标记（此时标记里的 N 仍是原始长度）。
   签名开启时会按 `timestamp`(10 位) + `sign`(44 位) 的等长占位符预估，保证真实请求也不会超。
 
@@ -541,7 +564,7 @@ webhook：https://...
 | HTTP 200 + 飞书 `code=9499`（限流） | ✅ 重试，并优先遵守 `Retry-After` |
 | HTTP 200 但其他 `code !== 0`（如 19021 签名错误） | ❌ 不重试，直接失败 |
 | 其他 4xx（400/403/404…） | ❌ 不重试，直接失败 |
-| 插件卸载导致的中断 | ❌ 不重试 |
+| 插件卸载 | ✅ 不中断在途请求（headless 在 turn/end 后立刻卸载；中断会把已送达误判为失败） |
 
 - 延迟：`500ms × 2^(n-1)` → 第 1 次重试前 500ms、第 2 次前 1000ms；服务端返回 `Retry-After` 时取两者较大值；单次退避最多 30 秒，避免极大 `retries` 把定时器撑爆。
 - 响应体最多读取 64KB；超出的部分直接丢弃，避免异常端点把内存打满。
@@ -583,7 +606,7 @@ node test/listener.test.js
 node test/pipeline.test.js
 ```
 
-三个脚本全部本地运行、不联网，共 99 项检查：
+三个脚本全部本地运行、不联网，共 102 项检查：
 
 `test/sign.test.js`（26 项）覆盖：
 
@@ -599,21 +622,22 @@ node test/pipeline.test.js
 
 1. **配置**：空串/空数组回退环境变量、显式配置优先、非法 URL 收集、告警通道/密钥归一化、`outputMode`/`summaryMaxChars` 默认值与边界。
 2. **Config 校验**：允许空配置；拒绝错误的 `includeSubagents`/`outputMode`/`alertWebhook` 类型。
-3. **摘要**：短文本不摘要；长结构化文本保留标题与结论且不超限；按段取句头并保留数量/失败原因；丢弃 how-to 与“说明/其他”填充段；默认最多 6 条；`composeMessageText` 默认摘要并标注原文长度；`full` 模式保留截断标记；`apply` 实际发送时默认也是摘要而不是全文。
+3. **旧摘要函数**：`composeMessageText`（1.3 及以前使用，2.0 发送管线不调用）的短文本、长文本、截断标记行为仍保留回归测试。
 4. **多回合（P2-1）**：第 2 回合的任务名取当前回合 prompt，而不是会话首条 prompt；重复 `turn/end` 只推送一次。
 5. **子代理**：默认跳过 subagent；`includeSubagents: true` 放行。
 6. **中止与安全**：已中止的 `postOnce` 不发起 fetch；`sendWithRetry` 返回 `attempts: 0`；畸形 URL 的错误文本不含完整 token。
 7. **告警路由（P2-2）**：业务失败时告警走独立 `alertWebhook`；告警失败后进入冷却、下一回合不重复告警；多个业务 Webhook 中一个失败不影响另一个。
 8. **1.2.x 新行为**：项目/对话/任务名顺序；cwd 取项目名；对话取最新 `session/title`（多条标题时取最后一条，跳过 `source.kind=fallback` 的首条 prompt）；`<at>` 标签中和；结束时间时区；`code=9499` 重试；`Retry-After`；超时语义；64KB 响应上限；同一 Webhook 串行队列；Config 越界拒绝。
 
-`test/pipeline.test.js`（22 项）覆盖：
+`test/pipeline.test.js`（25 项）覆盖：
 
 1. **清洗**：删 `【自动摘要…】` 尾注、省略号独占行、4+ 分隔线；兜底只留前 8 个非空行、总长 ≤300。
-2. **渲染**：一行型 ≤80 字；卡片按结论 → 产物 → 需要你 → 风险排列且 ≤200 字；空风险整行省略；「查看原文」按钮；签名卡片请求体。
-3. **路由**：progress 默认丢弃、finish 不丢；error/failed 红色卡片；warning 橙色；success+待办或含失败项蓝色 LLM 卡片；“失败 0 项”仍走一行。
-4. **聚合与归档**：满 5 条立即 flush、窗口到期 flush；归档按内容哈希命名、重复写入幂等。
-5. **检验验收**：3 条 success 无待办只发 1 条汇总卡；LLM 抛错时降级本地卡片；失败红色卡片；卡片发送失败降级一行型。
-6. **配置**：14 个新配置项的默认值、覆盖与非法值拒绝。
+2. **重点提取**：加粗标题与要点保留、过程叙述丢弃；`#` 标题 / 表格 / 短代码块归纳成小节；`renderHighlights` 不截断 `**` 且不超长。
+3. **渲染**：一行型 ≤80 字；重点卡片按 `**小节**` + `· 要点` 渲染；`cardBodyMaxChars` 生效；「查看原文」按钮；签名卡片请求体。
+4. **路由**：progress 默认丢弃、finish 不丢；2.0 默认所有结束回合都发卡片；`compactMode: true` 时 success 无待办回到一行型与聚合。
+5. **聚合与归档**：满 5 条立即 flush、窗口到期 flush；归档按内容哈希命名、重复写入幂等。
+6. **检验验收**：LLM 抛错时降级到本地重点提取；失败红色卡片；卡片发送失败降级一行型。
+7. **配置**：新增配置项（`cardBodyMaxChars`、`highlightMaxSections`、`highlightMaxItems`、`highlightItemChars`、`compactMode` 等）的默认值、覆盖与非法值拒绝。
 
 预期最后一行：`全部通过 ✅`。
 
@@ -645,7 +669,7 @@ node test/pipeline.test.js
 
 飞书消息有体积限制，本插件把**整个请求体**卡在 20KB（20480 字节）以内，正常不会触发。真的遇到了：
 
-- 1.4 的卡片正文默认 ≤200 字；把它调小（`cardBodyMaxChars`，最小 80）。
+- 2.0 的卡片正文默认 ≤1600 字；把它调小（`cardBodyMaxChars`，最小 80）。
 - 一行型默认 ≤80 字；把它调小（`oneLineMaxChars`，最小 40）。
 - 如果还超，说明归档路径/按钮等元数据异常，先看日志里的实际请求体大小。
 - 注意 20KB 是**字节**不是字符：中文 1 字 ≈ 3 字节，8000 个中文字符 ≈ 24KB，
@@ -668,11 +692,13 @@ node test/pipeline.test.js
 飞书 `text` 消息按 UTF-8 解析，插件发的就是 UTF-8 JSON。乱码一般出现在「用 GBK 控制台看日志」时，
 消息本身的字节是对的（可以在浏览器 DevTools 或飞书客户端里确认）。
 
-### 7. 摘要看起来漏了重要内容
+### 7. 重点卡片看起来还是漏了重要内容
 
-- 1.4 的卡片只保留结论、产物、需要你、风险；没有小标题的纯散文会退化成少量首句。
-- 需要更多内容时调大 `cardBodyMaxChars` / `oneLineMaxChars`，或在 prompt 里要求 Agent 输出“结论 / 变更 / 验证 / 风险”这类结构化小标题。
-- 逐字全文在归档目录（`archiveDir`）里；飞书端不再发送全文。确实要发全文时，请自行在 Agent 侧改输出，而不是依赖本插件。
+- 2.0 优先保留**加粗文本、Markdown 标题及其下属要点**；如果 Agent 的输出没有任何结构（纯散文、没有小标题），提取器只能按句子挑信息量高的几条，效果会打折扣。
+- 最有效的办法是在 prompt / 系统提示里要求 Agent 用 `**结论**`、`**根因**`、`**修复**`、`**验证**` 这类小标题组织答案——这也正是本插件最擅长提取的格式。
+- 需要更多内容时调大 `cardBodyMaxChars`（默认 1600）、`highlightMaxItems`（每节条数）或 `highlightItemChars`（单条长度）。
+- 逐字全文在归档目录（`archiveDir`）里；飞书端只发重点。确实要发全文时，请自行在 Agent 侧改输出，而不是依赖本插件。
+- 如果发现某类内容总是被丢，把它加进 `todoKeywords` 并在 GitHub 提 issue，附上原始输出片段。
 
 ### 8. 告警没收到 / 告警也发不出去
 
@@ -683,7 +709,7 @@ node test/pipeline.test.js
 ### 9. 会不会拖慢任务 / 把任务搞挂？
 
 不会。`turn/end` 是「提交后即发即忘」的广播事件，插件在这个回调里只做内存组装，网络请求异步执行且不 `await` 到 DSH 的主循环；
-同一 Webhook 的请求进入串行队列，不同 Webhook 互不阻塞。所有回调都包在 `try/catch` 里，异常只写日志。插件卸载时还会 `AbortController.abort()` 掉在途请求。
+同一 Webhook 的请求进入串行队列，不同 Webhook 互不阻塞。所有回调都包在 `try/catch` 里，异常只写日志。插件卸载时不会中断在途请求（headless 会在 `turn/end` 后立刻卸载插件，中断会把已经送达的消息误判为失败并触发告警）；在途请求受 `timeoutMs` 与重试上限约束，不会无限挂住进程。
 
 ---
 
@@ -701,7 +727,7 @@ dsh plugin --profile web remove dsh-feishu-digest
 
 ## 部署前合规确认（P2-3）
 
-这个插件会把 Agent 的任务名、状态、耗时和**输出内容**发送到飞书群。默认摘要降低了暴露面，但没有消除风险；生产部署前请逐项确认：
+这个插件会把 Agent 的任务名、状态、耗时和**输出内容中的重点片段**发送到飞书群。2.0 默认卡片最多 1600 字，比 1.x 的 200 字摘要暴露面更大，但没有消除风险；生产部署前请逐项确认：
 
 - [ ] **群范围**：接收群是否只有必要成员？是否允许外部成员、访客或机器人转发？
 - [ ] **数据分类**：Agent 输出是否可能包含源代码、密钥、客户数据、个人信息、内部路径或未公开计划？
@@ -720,7 +746,7 @@ dsh plugin --profile web remove dsh-feishu-digest
 - 代码里**没有任何**硬编码的 Webhook、token 或密钥；`config.example.yml` 里也全是占位符。
 - 日志里的 Webhook 一律打码（只留协议+域名+路径前 12 个字符），`userinfo`、query、hash 都会被去掉；非法 URL 只打印固定占位符，不会把完整 token 写进日志或告警消息。
 - 生产 Webhook 只接受 `https`，`http` 仅允许 localhost 回环，避免 token 明文上网；插件不读取 `HTTP(S)_PROXY`，企业代理/自签 CA 场景需要自行在 Node 层配置。
-- 默认发送的是「项目 + 对话 + 任务名 + 结论/产物/待办/风险」；原文归档到本地 `archiveDir`，不再整段发到飞书。精简结果仍可能包含代码片段、路径、错误信息等敏感内容，不是脱敏器。
+- 默认发送的是「项目 + 对话 + 任务名 + 重点片段（加粗文本、标题下要点、根因/修复/验证/风险）」；原文归档到本地 `archiveDir`，不再整段发到飞书。2.0 卡片正文最多 1600 字，仍可能包含代码片段、路径、错误信息等敏感内容，不是脱敏器。
 - 正文中的 `<at ...>` 会被中和为全角字符，降低 @全体 注入风险；但这只是文本层防护，不替代内容审核。
 - 如果启用 `llmEnabled`，命中的卡片正文会发给配置的 DSH LLM provider；不需要外部模型时保持 `false`，全走本地兜底。
 - 插件只往外发消息，不读取群消息、不处理回调，没有任何入站通道。
@@ -735,8 +761,8 @@ dsh plugin --profile web remove dsh-feishu-digest
 | 触发点 | `ctx.on('session/event', (session, event) => …)`，只处理 `turn/start`、`user/message`、`assistant/message`、`turn/end` |
 | 耗时 | `turn/end.time - turn/start.time`（`SessionEvent.time` 是 Unix 毫秒） |
 | 最终输出 | 本回合最后一条**非空** `assistant/message` 里 `content` 中 `type === 'text'` 的块拼接（不含 reasoning / tool-call） |
-| 精简路由 | `routeNotifyEvent()` 纯规则：失败/错误红卡、warning 橙卡、progress 默认丢弃、success+待办或失败项蓝卡（LLM）、其余一行型；finish/error 永不丢 |
-| 卡片摘要 | LLM 可用时按附录提示词输出 JSON；失败/超时/非法 JSON 走 `digestFromText()` 本地兜底；commit 以结构化字段为准覆盖 |
+| 精简路由 | `routeNotifyEvent()` 纯规则：2.0 默认每个 finish/error/warning 都发卡片（失败红、warning 橙、其余蓝）；只有 `compactMode: true` 才回到「成功且无待办 → 一行型 + 聚合」 |
+| 卡片重点 | 未启用 LLM（默认）时走 `extractHighlights()`：整行加粗/`#` 标题开小节，列表/段落/表格/短代码为要点，按加粗、行内代码、路径、解决类关键词打分，每节取前 `highlightMaxItems` 条；LLM 启用时按附录提示词输出 `{headline, sections}` JSON，失败/超时/非法 JSON 仍回退本地提取 |
 | 原文归档 | `createArchive()`：`sha256(原文)[:8].md`，`flag: 'wx'` 幂等；发送前写盘，卡片的「查看原文」指向 `archiveBaseUrl` |
 | 聚合 | `createAggregator()`：key=`(项目, 对话)`，一行型缓冲，30 分钟或满 5 条 flush 成汇总卡 |
 | 项目名 | `session.header.cwd` 的 basename；根目录/空值回退 `(未知项目)` |

@@ -7,7 +7,8 @@
 #
 # 注意：本文件里所有 token / 密钥都是占位符，请替换成你自己的。
 # 数值边界：timeoutMs>=1、retries>=1、maxChars>=0、summaryMaxChars>=80、alertThreshold>=1、
-# oneLineMaxChars>=40、cardBodyMaxChars>=80、aggregateWindowMs>=1、aggregateMaxItems>=1、
+# oneLineMaxChars>=40、cardBodyMaxChars>=80、highlightMaxSections>=1、highlightMaxItems>=1、
+# highlightItemChars>=40、aggregateWindowMs>=1、aggregateMaxItems>=1、
 # llmTimeoutMs>=100、llmMaxTokens>=50、llmRetries>=0；整数项必须是整数。
 # 真实的 cordis.patch.yml 包含 webhook/secret，请只放在本机 profile 目录，
 # 不要提交到 Git、截图或工单；本仓库根目录的 cordis.patch.yml 只是 bundle 挂载声明，不含密钥。
@@ -56,21 +57,31 @@
     includeSubagents: false
 
     # ---------------------------------------------------------------------
-    # 通知精简管线（1.4）
+    # 通知管线（1.4 起；2.0 默认发送「重点卡片」）
     # ---------------------------------------------------------------------
 
     # 可选。progress 类过程消息默认丢弃；设为 false 可放开。
     dropProgress: true
 
-    # 可选。命中任一关键词就走卡片（否则成功消息走一行型）。
+    # 2.0 默认每个回合都发重点卡片；以下关键词只在 compactMode: true 时用于判断是否升级成卡片。
     # 支持字符串（|、逗号或换行分隔）或字符串数组。
     # todoKeywords: 必须|需要你|待办|仍为空|可以推翻|建议|剩余|没动|风险
 
-    # 可选。一行型与卡片正文的硬上限。
+    # 可选。一行型的硬上限（仅在 compactMode 或卡片降级时使用）。
     oneLineMaxChars: 80
-    cardBodyMaxChars: 200
 
-    # 可选。一行型聚合窗口与条数上限：30 分钟或满 5 条时合并成一条汇总卡。
+    # 可选。重点卡片正文硬上限，默认 1600；2.0 的卡片要放根因/修复/验证，200 字会不够。
+    cardBodyMaxChars: 1600
+
+    # 可选。重点提取：最多几个小节、每节几条、单条最长多少字符。
+    highlightMaxSections: 8
+    highlightMaxItems: 4
+    highlightItemChars: 240
+
+    # 可选。设为 true 回到 1.4 的「成功且无待办 → 一行型 + 聚合」模式；默认 false。
+    # compactMode: true
+
+    # 可选。一行型聚合窗口与条数上限：30 分钟或满 5 条时合并成一条汇总卡（仅 compactMode）。
     aggregateWindowMs: 1800000
     aggregateMaxItems: 5
 
@@ -80,7 +91,7 @@
     # 可选。归档的对外 URL 前缀；配置后才显示「查看原文」按钮。
     # archiveBaseUrl: https://example.com/feishu-archive
 
-    # 可选。只有“成功且含待办关键词或失败项”的卡片才会调用 LLM；关闭时全走本地兜底。
+    # 可选。额外调用 LLM 做重点提取；关闭时全走本地 extractHighlights（默认即可用）。
     llmEnabled: false
     # llmProvider: deepseek
     # llmModel: deepseek-chat

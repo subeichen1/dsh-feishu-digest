@@ -35,7 +35,7 @@ import { join } from 'node:path'
 const LOG_PREFIX = '[dsh-feishu-digest]'
 
 /** 插件版本号（与 package.json 保持一致，仅用于日志）。 */
-const VERSION = '1.4.0'
+const VERSION = '2.0.0'
 
 /** 默认请求超时（毫秒）。 */
 const DEFAULT_TIMEOUT_MS = 8000
@@ -79,8 +79,21 @@ const DEFAULT_DROP_PROGRESS = true
 const DEFAULT_TODO_KEYWORDS = ['必须', '需要你', '待办', '仍为空', '可以推翻', '建议', '剩余', '没动', '风险']
 /** 一行型消息的字符上限。 */
 const DEFAULT_ONE_LINE_MAX_CHARS = 80
-/** 卡片正文的字符上限。 */
-const DEFAULT_CARD_BODY_MAX_CHARS = 200
+/**
+ * 卡片正文的字符上限。
+ *
+ * 2.0 起默认 1600 字：通知的主体是「重要内容」而不是一句话结论。
+ * 飞书单条请求硬上限仍是 20KB，1600 字中文约 4.8KB，留足余量。
+ */
+const DEFAULT_CARD_BODY_MAX_CHARS = 1600
+/** 重点提取：最多保留几个小节（加粗标题/## 标题/“结论：”这类标签）。 */
+const DEFAULT_HIGHLIGHT_MAX_SECTIONS = 8
+/** 重点提取：每个小节最多保留几条要点。 */
+const DEFAULT_HIGHLIGHT_MAX_ITEMS = 4
+/** 重点提取：单条要点的字符上限（超过就截断，不整条丢弃）。 */
+const DEFAULT_HIGHLIGHT_ITEM_CHARS = 240
+/** 默认关闭「一行型」模式：2.0 默认每个回合都发重点卡片。 */
+const DEFAULT_COMPACT_MODE = false
 /** 一行型消息聚合窗口：30 分钟。 */
 const DEFAULT_AGGREGATE_WINDOW_MS = 30 * 60 * 1000
 /** 一行型消息聚合上限：5 条。 */
@@ -95,54 +108,58 @@ const DEFAULT_LLM_RETRIES = 1
 const DEFAULT_ARCHIVE_DIR = join(homedir(), '.dsh', 'feishu-digest', 'archive')
 
 /**
- * 附录 A 的压缩提示词，原样嵌入；不要改写。
- * 反引号在模板字符串里转义，运行时的文本与附录一致。
+ * 可选 LLM 重点提取提示词（默认不启用，`llmEnabled: true` 时才调用）。
+ *
+ * 设计原则与 2.0 的本地提取完全一致：**保留作者已经强调的重点**，
+ * 不做「删掉细节只留一句话」的压缩——那正是 1.x 版本被用户嫌弃的原因。
+ * 反引号在模板字符串里转义，运行时的文本与下面一致。
  */
 const LLM_DIGEST_PROMPT = `# 角色
-你是飞书通知压缩器。输入是一段 Agent 任务报告，你从中抽取关键信息，输出一条精简通知的 JSON。
+你是飞书通知的重点提取器。输入是一段 Agent 任务报告，你只负责「挑出重要的」，不做概括式压缩。
+
+# 什么算重要（按优先级从高到低）
+1. 作者用加粗（**这样**）、标题（## 这样）标出的内容 —— 这些是作者亲手强调的重点，必须保留原意和关键细节
+2. 加粗标题下面紧跟着的说明/列表 —— 保留其中能让人看懂“改了什么、怎么解决”的句子
+3. 问题的根因、解决方案、具体改动（文件路径、函数名、命令、配置项）、验证结果、风险与注意事项
+4. 用户需要做的事（待确认、待配置、待决策）
+
+# 什么不重要（可以丢弃）
+- 寒暄、过程叙述（“我先看看”“接下来我……”）、客套话
+- 重复的“已完成”清单、没有信息量的空泛总结
+- 大段背景介绍、与结论无关的推理过程
 
 # 硬性规则
-1. 只做抽取与概括，禁止编造原文没有的信息，禁止推测
-2. 只输出严格 JSON，不要 markdown 代码块标记，不要任何解释文字
-3. 某类内容不存在时输出空数组 []，不要硬凑
-4. headline 不得重复项目名/任务名（卡片头部已展示）
+1. 只做抽取，禁止编造原文没有的信息
+2. 不要因为“实现细节”就删掉文件路径、函数名、命令、错误码——这些恰恰是用户复现/验证问题所需
+3. 每条要点保留原文措辞，可删枝叶但不得改变语义；单条不超过 240 字
+4. 只输出严格 JSON，不要 markdown 代码块标记，不要任何解释文字
+5. 某类内容不存在时输出空数组 []，不要硬凑
 
 # 输出格式
-{"headline": "一句话结论，≤30字，含成功/失败状态",
- "artifacts": ["关键产物：commit号、链接、变更规模，每条≤30字"],
- "actions": ["需要用户亲自做的事，每条≤40字"],
- "risks": ["风险或需用户决策的事项，每条≤40字"]}
-
-# 只保留以下四类
-- 结果：成功 / 失败 / 部分完成
-- 关键产物：commit、链接、变更文件数/行数
-- 需用户行动：待填配置、待决策、待确认事项
-- 风险与遗留
-
-# 一律丢弃
-- 实现细节、函数名/常量名/代码片段、改了哪几行
-- 已完成事项的逐条明细
-- 元信息：【自动摘要】标注、字符数、省略号截断痕迹、分隔线
-- 过程叙述、礼貌语、自我说明
+{"headline": "一句话结论（≤40字）",
+ "sections": [
+   {"title": "根因", "items": ["……", "……"]},
+   {"title": "修复", "items": ["……"]}
+ ]}
 
 # 示例
 输入：
-P3 / P4 已全部修完并提交 \`2fe1810\`（工作区 clean）。
-## P3（6 项）
-- **D-01 死代码三处**：\`mismatch\`（恒 false）改为可达的 \`otherRecord\` 分支；
-删 \`INVITE_SHARE_BACK\` / \`INVITE_SHARE_BACK_DESC\` / \`INVITE_MISMATCH_DESC\`；
-\`loadPendingInvite\` 改为不导出的 \`readPendingInvite\`；\`CreateInviteResult\`…
-## P4（8 项）
-…
-有两处我按「不是 bug」处理，如果你认为该算缺陷可以推翻：D-03（过期文档清理
-是节流而非只删一条）和 D-07（产物已压缩，\`minified:false\` 无实际影响）。
-… [自动摘要，原文 1900 字符]
+结论：auto-effort 插件写入了不支持的 reasoningEffort 值。
+**根因**
+\`dsh-agent-loop/lib/index.js:1010\` 把 UI 档位 \`max\` 直接透传给只支持 low/medium/high 的 provider，触发 \`UNSUPPORTED_REASONING_EFFORT\`。
+**修复**
+- \`dsh-agent-loop/lib/index.js\`：新增 \`normalizeReasoningEffort()\`，\`max\` 映射为 \`high\`
+- \`auto-effort/lib/index.js\`：读取模型能力列表后再写入
+**验证**
+- \`npm test\` 42 项全部通过
 
 输出：
-{"headline":"P3×6、P4×8 已全部修复并提交",
- "artifacts":["commit 2fe1810，工作区 clean"],
- "actions":["如认为 D-03、D-07 应算缺陷，可提出推翻"],
- "risks":[]}`
+{"headline":"auto-effort 的 reasoningEffort 取值不兼容已修复",
+ "sections":[
+   {"title":"根因","items":["\`dsh-agent-loop/lib/index.js:1010\` 把 UI 档位 \`max\` 直接透传给只支持 low/medium/high 的 provider，触发 \`UNSUPPORTED_REASONING_EFFORT\`。"]},
+   {"title":"修复","items":["\`dsh-agent-loop/lib/index.js\`：新增 \`normalizeReasoningEffort()\`，\`max\` 映射为 \`high\`","\`auto-effort/lib/index.js\`：读取模型能力列表后再写入"]},
+   {"title":"验证","items":["\`npm test\` 42 项全部通过"]}
+ ]}`
 
 // ---------------------------------------------------------------------------
 // 通用小工具
@@ -216,6 +233,18 @@ export function clipChars(text, maxChars) {
 export function clipText(text, maxChars) {
   const clipped = clipChars(text, maxChars)
   return clipped.truncated ? `${clipped.text}…` : clipped.text
+}
+
+/**
+ * 截断可能把行内的 `**加粗**` 切成单个 `**`，飞书会把它当成字面量显示。
+ * 这里在有奇数个加粗标记时去掉最后一个，保证 Markdown 始终成对。
+ */
+export function balanceBold(text) {
+  const source = String(text ?? '')
+  const marks = source.match(/\*\*/g)
+  if (!marks || marks.length % 2 === 0) return source
+  const index = source.lastIndexOf('**')
+  return index >= 0 ? source.slice(0, index) + source.slice(index + 2) : source
 }
 
 /** 从 llm 消息的 content 数组中抽取纯文本（只用 type === 'text' 的块）。 */
@@ -452,6 +481,288 @@ export function renderOneLine(event, maxChars = DEFAULT_ONE_LINE_MAX_CHARS) {
   return chars.length <= maxChars ? line : `${chars.slice(0, Math.max(0, maxChars - 1)).join('')}…`
 }
 
+// ---------------------------------------------------------------------------
+// 重点提取（2.0 核心）：只传「重要内容」，而不是把全文压成一句空话
+// ---------------------------------------------------------------------------
+//
+// 判定「重要」的规则（与 README「什么算重要内容」一节一致）：
+//   1. 作者用加粗（**…** / __…__）或标题（# / ## / ###）标出的内容 —— 作者亲手强调的重点；
+//   2. 加粗标题/小标题下面紧跟的正文与列表 —— 这些是重点的展开说明；
+//   3. 含根因/方案/修复/步骤/验证/风险等「解决问题」信号的句子；
+//   4. 具体可执行的信息：文件路径、函数名、命令、URL、错误码、commit、数量。
+// 丢弃：寒暄、过程叙述（“我先…”“接下来…”）、没有信息量的已完成清单、纯背景。
+
+/** 压掉多余空白，但**保留** `**加粗**` 与 `` `行内代码` `` 标记（飞书 lark_md 能渲染）。 */
+function normalizeInline(text) {
+  return String(text ?? '').replace(/\s+/g, ' ').trim()
+}
+
+/** 标题只用于比较/展示，去掉 #、外层 **、书名号式【】和尾部冒号。 */
+function plainTitle(text) {
+  return normalizeInline(text)
+    .replace(/^#{1,6}\s+/, '')
+    .replace(/^(?:\*\*|__)([\s\S]+?)(?:\*\*|__)$/, '$1')
+    .replace(/^【\s*/, '')
+    .replace(/\s*】$/, '')
+    .replace(/[:：\s]+$/, '')
+    .trim()
+}
+
+/** 按句号/问号/叹号/分号切句，保留标点；用于把一段话拆成可挑选的要点。 */
+function splitSentences(text) {
+  const source = normalizeInline(text)
+  if (!source) return []
+  const parts = source.split(/(?<=[。！？!?；;])/).map((part) => part.trim()).filter(Boolean)
+  return parts.length > 0 ? parts : [source]
+}
+
+/** 看起来像「结论 / 根因 / 修复 / 验证 / 风险 …」的小标题。 */
+const HIGHLIGHT_TITLE_RE = /(?:结论|结果|总结|根因|原因|修复|解决|方案|变更|修改|验证|测试|注意|风险|限制|建议|用法|配置|安装|命令|步骤|下一步|待办|完成|影响|改动|问题|答案)/
+/** 纯背景类标题：整节通常没有可执行信息，排序时降权。 */
+const NOISE_TITLE_RE = /(?:背景|说明|过程|细节|附录|参考|日志|输出|历史|现状)/
+/** 行首「结论：…」「根因：…」这类标签 + 内容。 */
+const LABEL_LEAD_RE = /^(结论|结果|总结|摘要|根因|原因|修复|方案|变更|修改|验证|测试|注意|风险|限制|建议|下一步|待办|问题)\s*[:：]\s*(.*)$/
+
+/** 单条要点的信息量打分（越高越可能进通知）。 */
+function scoreHighlightItem(item, blockTitle) {
+  let score = 0
+  if (/\*\*[^*]+\*\*|__[^_]+__/.test(item)) score += 8 // 作者加粗：最高优先级
+  if (/`[^`]+`/.test(item)) score += 4 // 行内代码/命令/路径
+  if (/https?:\/\//.test(item)) score += 3
+  if (/(?:[A-Za-z]:\\|(?:^|[\s（(])(?:[\w.-]+\/)+[\w.-]+|\.(?:js|mjs|cjs|ts|tsx|json|ya?ml|md|py|sh|ps1|exe|dll)\b)/.test(item)) score += 3
+  if (/(?:根因|原因|解决|修复|方案|步骤|方法|结论|结果|建议|注意|风险|限制|必须|需要|改为|新增|删除|安装|配置|命令|执行|验证|测试|通过|失败|错误|不兼容|报错|绕过)/.test(item)) score += 4
+  if (/\d/.test(item)) score += 1
+  if (/^(?:好的|没问题|我来|我先|让我|接下来|首先|已经|正在|现在|然后|最后|顺便|另外|其实)/.test(item)) score -= 8
+  // 英文的过程叙述同样属于噪音（模型偶尔会把思考过程混进最终输出）。
+  if (/^(?:I(?:'ll| will| should| need| could| can| think|'m)|Let me|We(?:'ll| will| should| need)|Also mention|First,? I|Next,? I|Then I|Finally,? I|Here'?s|The user|Looking at|Now I)\b/i.test(item)) score -= 12
+  if (Array.from(item).length < 10) score -= 3
+  if (blockTitle && NOISE_TITLE_RE.test(blockTitle)) score -= 6
+  return score
+}
+
+/** 小节打分：标题像「结论/根因/修复」的优先，像「背景/过程」的降权。 */
+function scoreHighlightBlock(block) {
+  let score = 0
+  if (!block.title) score += 2
+  else if (HIGHLIGHT_TITLE_RE.test(block.title)) score += 12
+  else if (NOISE_TITLE_RE.test(block.title)) score -= 10
+  else score += 3
+  score += Math.min(6, block.items.length)
+  return score
+}
+
+/**
+ * 从 Agent 最终输出里提取「重要内容」。
+ *
+ * 返回结构：{ headline, blocks: [{ title, items }], originalChars, empty }
+ * - 没有加粗/标题的普通文本也会保留：按句子取前几条，不会返回空。
+ * - 代码块超过 260 字符视为实现细节丢弃；短命令保留为一条要点。
+ * - 表格按行转成「单元格 ｜ 单元格」，保留对比数据。
+ *
+ * @param {string} text
+ * @param {{ maxSections?: number, maxItems?: number, itemChars?: number }} [options]
+ */
+export function extractHighlights(text, options = {}) {
+  const maxSections = Math.max(1, Math.trunc(Number(options.maxSections) || DEFAULT_HIGHLIGHT_MAX_SECTIONS))
+  const maxItems = Math.max(1, Math.trunc(Number(options.maxItems) || DEFAULT_HIGHLIGHT_MAX_ITEMS))
+  const itemChars = Math.max(40, Math.trunc(Number(options.itemChars) || DEFAULT_HIGHLIGHT_ITEM_CHARS))
+  const raw = String(text ?? '')
+  const originalChars = Array.from(raw).length
+  const cleaned = cleanNoise(raw)
+  if (!cleaned) return { headline: '', blocks: [], originalChars, empty: true }
+
+  const blocks = []
+  const seen = new Set()
+  let current = null
+  let inFence = false
+  let fenceLines = []
+  let fenceBlock = null
+  let headline = ''
+
+  const openBlock = (title = '') => {
+    current = { title: plainTitle(title), items: [], order: blocks.length }
+    blocks.push(current)
+    return current
+  }
+  const addItem = (value) => {
+    const item = normalizeInline(value).replace(/^[·•]\s*/, '')
+    if (!item) return
+    const key = item.replace(/\*\*/g, '').replace(/`/g, '')
+    if (seen.has(key)) return
+    seen.add(key)
+    if (!current) openBlock('')
+    current.items.push(item)
+  }
+
+  for (const rawLine of cleaned.split(/\r?\n/)) {
+    const line = rawLine.trim()
+
+    // 代码块：围栏内整段收集，结束时决定是否值得保留。
+    if (/^```/.test(line)) {
+      if (!inFence) {
+        inFence = true
+        fenceLines = []
+        fenceBlock = current
+      } else {
+        inFence = false
+        const code = fenceLines.join('\n').trim()
+        // 只保留短代码（命令、配置片段）；长代码是实现细节，丢弃。
+        if (code && Array.from(code).length <= 260 && fenceBlock) {
+          const compact = code.split(/\r?\n/).map((part) => part.trim()).filter(Boolean).join(' ; ')
+          fenceBlock.items.push(`\`${normalizeInline(compact)}\``)
+        }
+        fenceLines = []
+        fenceBlock = null
+      }
+      continue
+    }
+    if (inFence) {
+      fenceLines.push(rawLine)
+      continue
+    }
+    if (!line) continue
+    if (/^[-=_*─—]{4,}$/.test(line)) continue
+
+    // 表格行：表头分隔行丢弃，其余转成「a ｜ b ｜ c」要点。
+    if (/^\|.*\|$/.test(line)) {
+      const cells = line.replace(/^\|/, '').replace(/\|$/, '').split('|').map((cell) => normalizeInline(cell))
+      if (cells.every((cell) => cell === '' || /^:?-{2,}:?$/.test(cell))) continue
+      const row = cells.filter(Boolean).join(' ｜ ')
+      if (row) addItem(row)
+      continue
+    }
+
+    // 标题：# / ## / ### 或整行加粗。
+    let match = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line)
+    if (match) {
+      openBlock(match[2])
+      continue
+    }
+    match = /^(?:\*\*|__)([^*_]{1,60}?)(?:\*\*|__)\s*[:：]?\s*$/.exec(line)
+    if (match) {
+      openBlock(match[1])
+      continue
+    }
+    // 「**根因**：内容」或「**根因：** 内容」：加粗标签 + 同一行的正文。
+    match = /^(?:\*\*|__)([^*_]{1,60}?)(?:\*\*|__)\s*[:：]\s*(.+)$/.exec(line)
+      || /^(?:\*\*|__)([^*_]{1,60}?)[：:](?:\*\*|__)\s*(.*)$/.exec(line)
+    if (match) {
+      openBlock(match[1])
+      if (match[2]) addItem(match[2])
+      continue
+    }
+    // 「结论：……」这类标签行：标签当小节标题，冒号后当第一条要点。
+    match = LABEL_LEAD_RE.exec(line)
+    if (match) {
+      openBlock(match[1])
+      if (match[2]) addItem(match[2])
+      continue
+    }
+
+    // 列表项：保留有序编号（步骤有顺序意义），无序符号去掉。
+    const listMatch = /^([-*+]|\d+[.)、])\s+(.*)$/.exec(line)
+    if (listMatch) {
+      const content = listMatch[2]
+      const prefix = /^\d/.test(listMatch[1]) ? `${listMatch[1].replace('、', '.')} ` : ''
+      const boldLead = /^(?:\*\*|__)([^*_]{1,60}?)(?:\*\*|__)\s*[:：]\s*(.+)$/.exec(content)
+      if (boldLead) addItem(`${prefix}**${boldLead[1].trim()}**：${boldLead[2].trim()}`)
+      else addItem(`${prefix}${content}`)
+      continue
+    }
+
+    // 普通段落：一句一条。
+    for (const sentence of splitSentences(line)) {
+      addItem(sentence)
+    }
+  }
+
+  // 对每个小节内部按信息量挑要点，再恢复原顺序；小节数量超限时保留得分高的。
+  let prepared = []
+  for (const block of blocks) {
+    if (block.items.length === 0) continue
+    const limit = block.title ? maxItems : Math.min(2, maxItems)
+    const ranked = block.items.map((item, index) => ({ item, index, score: scoreHighlightItem(item, block.title) }))
+    const positive = ranked.filter((entry) => entry.score >= 0)
+    // 明确的过程叙述/寒暄（负分）直接丢弃；若整节全是负分，先记下最高分一条，
+    // 等所有小节都算完后，只有在没有任何正分小节时才用它兜底，避免通知变成空白。
+    const best = ranked.slice().sort((a, b) => b.score - a.score || a.index - b.index)[0]
+    const pool = positive.length > 0 ? positive : [best]
+    const items = pool.sort((a, b) => b.score - a.score || a.index - b.index)
+      .slice(0, limit).sort((a, b) => a.index - b.index)
+      .map((entry) => balanceBold(clipText(entry.item, itemChars)))
+    prepared.push({
+      title: block.title,
+      items,
+      order: block.order,
+      score: scoreHighlightBlock(block),
+      bestScore: positive.length > 0 ? Math.max(...positive.map((entry) => entry.score)) : best.score,
+    })
+  }
+
+  // 只要有正分小节，就丢掉全是过程叙述/寒暄的负分小节。
+  if (prepared.some((block) => block.bestScore >= 0)) {
+    prepared = prepared.filter((block) => block.bestScore >= 0)
+  } else if (prepared.length > 1) {
+    prepared = prepared.slice().sort((a, b) => b.bestScore - a.bestScore).slice(0, 1)
+  }
+
+  if (prepared.length === 0) {
+    // 极端情况（整段只有长代码/分隔线）：退回按句取前几条，至少说清楚发生了什么。
+    const sentences = splitSentences(cleaned)
+    const items = sentences.slice(0, maxItems).map((sentence) => clipText(sentence, itemChars))
+    prepared = items.length > 0 ? [{ title: '', items, order: 0, score: 0 }] : []
+  }
+
+  if (prepared.length > maxSections) {
+    const keep = new Set(prepared.slice().sort((a, b) => b.score - a.score || a.order - b.order)
+      .slice(0, maxSections).map((block) => block.order))
+    prepared = prepared.filter((block) => keep.has(block.order))
+  }
+
+  // headline 取「结论/结果/总结/摘要」小节的第一条；没有这类小节就取第一个保留小节。
+  // 不能直接拿原文第一句：那通常是“我先梳理一下……”这类过程叙述。
+  if (!headline) {
+    const preferred = prepared.find((block) => /结论|结果|总结|摘要/.test(block.title)) || prepared[0]
+    headline = preferred && preferred.items.length > 0 ? preferred.items[0] : ''
+  }
+
+  return {
+    headline: clipText(normalizeInline(headline), 80),
+    blocks: prepared.map(({ title, items }) => ({ title, items })),
+    originalChars,
+    empty: prepared.length === 0,
+  }
+}
+
+/**
+ * 渲染重点卡片正文（lark_md）：加粗小标题 + 「· 」要点。
+ * 超长时按整行裁剪，避免把 `**` 标记截成半截导致飞书渲染错乱。
+ */
+export function renderHighlights(highlights, maxChars = DEFAULT_CARD_BODY_MAX_CHARS) {
+  const limit = Math.max(80, Math.trunc(Number(maxChars) || DEFAULT_CARD_BODY_MAX_CHARS))
+  const blocks = Array.isArray(highlights?.blocks) ? highlights.blocks : []
+  const lines = []
+  let used = 0
+  for (const block of blocks) {
+    const blockLines = []
+    if (block?.title) blockLines.push(`**${block.title}**`)
+    for (const item of Array.isArray(block?.items) ? block.items : []) {
+      if (item) blockLines.push(`· ${item}`)
+    }
+    for (const line of blockLines) {
+      const cost = Array.from(line).length + (lines.length > 0 ? 1 : 0)
+      if (used + cost > limit) {
+        const room = limit - used - (lines.length > 0 ? 1 : 0) - 1
+        if (room >= 16) lines.push(balanceBold(clipText(line, room)))
+        return lines.join('\n')
+      }
+      lines.push(line)
+      used += cost
+    }
+  }
+  return lines.join('\n')
+}
+
 /** 从正文里抽一个 commit 号（结构化字段缺失时的兜底）。 */
 export function extractCommit(text) {
   const match = /(?:commit|提交)\s*[:：#]?\s*([0-9a-f]{7,40})\b/i.exec(String(text ?? ''))
@@ -507,8 +818,17 @@ export function digestFromText(text) {
   return { headline, artifacts, actions, risks }
 }
 
-/** 渲染卡片的纯文本正文（≤ maxChars 字符）。 */
+/**
+ * 渲染卡片的纯文本正文（≤ maxChars 字符）。
+ *
+ * 2.0 起优先使用重点提取的结果（`digest.blocks`）；传入旧版
+ * `{headline, artifacts, actions, risks}` 时仍按老版式渲染，保证兼容。
+ */
 export function renderCardBody(digest, maxChars = DEFAULT_CARD_BODY_MAX_CHARS) {
+  const blocks = Array.isArray(digest?.blocks) ? digest.blocks : null
+  if (blocks && blocks.length > 0) {
+    return renderHighlights({ blocks }, maxChars)
+  }
   const lines = [`结论：${digest?.headline || '任务已结束'}`, '▸ 产物']
   const artifacts = Array.isArray(digest?.artifacts) ? digest.artifacts : []
   const actions = Array.isArray(digest?.actions) ? digest.actions : []
@@ -528,10 +848,11 @@ export function renderCardBody(digest, maxChars = DEFAULT_CARD_BODY_MAX_CHARS) {
 }
 
 /** 飞书互动卡片（msg_type=interactive 的 card 字段）。 */
-export function buildCardMessage({ event, digest, color = 'blue', archiveUrl = '', maxChars = DEFAULT_CARD_BODY_MAX_CHARS }) {
+export function buildCardMessage({ event, digest, body = '', color = 'blue', archiveUrl = '', maxChars = DEFAULT_CARD_BODY_MAX_CHARS }) {
   const icons = { success: '✅', failed: '❌', warning: '⏸️' }
   const icon = icons[event?.status] || '✅'
-  const title = `${icon} ${clipText(displayName(event?.task, '(未命名任务)', 40), 40)}`
+  // 头部展示「用户的问题」，2.0 放宽到 60 字，避免问题被截得看不懂。
+  const title = `${icon} ${clipText(displayName(event?.task, '(未命名任务)', 60), 60)}`
   const elements = []
   const project = displayName(event?.project, '(未知项目)', 40)
   const conversation = displayName(event?.conversation, '(未命名对话)', 40)
@@ -540,7 +861,10 @@ export function buildCardMessage({ event, digest, color = 'blue', archiveUrl = '
     tag: 'note',
     elements: [{ tag: 'plain_text', content: `项目：${project} ｜ 对话：${conversation}` }],
   })
-  elements.push({ tag: 'div', text: { tag: 'lark_md', content: renderCardBody(digest, maxChars) } })
+  const content = body || renderCardBody(digest, maxChars)
+  if (content) {
+    elements.push({ tag: 'div', text: { tag: 'lark_md', content } })
+  }
   if (archiveUrl) {
     elements.push({
       tag: 'action',
@@ -584,12 +908,28 @@ export function parseDigestJson(raw) {
     return null
   }
   if (!parsed || typeof parsed !== 'object') return null
-  const headline = typeof parsed.headline === 'string' ? clipText(parsed.headline, 30) : ''
-  if (!headline) return null
+  const headline = typeof parsed.headline === 'string' ? clipText(parsed.headline, 40) : ''
   const cleanList = (value, maxChars) => (Array.isArray(value) ? value : [])
     .filter((item) => typeof item === 'string' && item.trim())
     .map((item) => clipText(item.trim(), maxChars))
-    .slice(0, 3)
+    .slice(0, 6)
+
+  // 2.0 的重点提取格式：{"headline":"…","sections":[{"title":"根因","items":[…]}]}
+  if (Array.isArray(parsed.sections)) {
+    const blocks = parsed.sections
+      .filter((section) => section && typeof section === 'object')
+      .map((section) => ({
+        title: typeof section.title === 'string' ? plainTitle(section.title) : '',
+        items: cleanList(section.items, DEFAULT_HIGHLIGHT_ITEM_CHARS),
+      }))
+      .filter((section) => section.title || section.items.length > 0)
+      .slice(0, DEFAULT_HIGHLIGHT_MAX_SECTIONS)
+    if (blocks.length === 0) return null
+    return { headline, blocks }
+  }
+
+  // 1.x 的旧格式：{"headline","artifacts","actions","risks"}（仍兼容）
+  if (!headline) return null
   return {
     headline,
     artifacts: cleanList(parsed.artifacts, 30),
@@ -719,7 +1059,13 @@ export function createAggregator({
   }
 }
 
-/** 纯规则路由：drop / line / card。 */
+/**
+ * 纯规则路由：drop / line / card。
+ *
+ * 2.0 的默认策略：**每个回合都发重点卡片**——一行型消息没有正文，
+ * 用户看不出模型到底回复了什么，正是 1.x 被嫌弃的原因。
+ * 只有显式设置 `compactMode: true` 才回到「成功且无待办 → 一行型」的旧行为。
+ */
 export function routeNotifyEvent(event, config = {}) {
   if (event?.type === 'error' || event?.status === 'failed') {
     return { action: 'card', color: 'red', useLlm: false }
@@ -730,10 +1076,13 @@ export function routeNotifyEvent(event, config = {}) {
   if (event?.type === 'progress' && config.dropProgress !== false) {
     return { action: 'drop' }
   }
-  if (hasTodoKeyword(event?.body, config.todoKeywords) || hasFailureSignal(event?.body)) {
-    return { action: 'card', color: 'blue', useLlm: true }
+  if (config.compactMode === true) {
+    if (hasTodoKeyword(event?.body, config.todoKeywords) || hasFailureSignal(event?.body)) {
+      return { action: 'card', color: 'blue', useLlm: config.llmEnabled === true }
+    }
+    return { action: 'line' }
   }
-  return { action: 'line' }
+  return { action: 'card', color: 'blue', useLlm: config.llmEnabled === true }
 }
 
 /**
@@ -763,9 +1112,14 @@ export function createNotifyPipeline({
   }
 
   const sendSummary = async (items) => {
-    // 汇总卡只列任务名；完整一行型太长，5 条会把 200 字上限撑爆。
+    // compactMode 的汇总卡：每个任务带一条最重要的要点，避免只剩任务名。
     const body = clipText(
-      items.map((item, index) => `${index + 1}. ${displayName(item.event.task, '(未命名任务)', 30)}`).join('\n'),
+      items.map((item, index) => {
+        const task = displayName(item.event.task, '(未命名任务)', 30)
+        const point = extractHighlights(item.event.body, { maxSections: 1, maxItems: 1, itemChars: 80 })
+          .blocks[0]?.items?.[0] || ''
+        return `${index + 1}. ${task}${point ? `：${point}` : ''}`
+      }).join('\n'),
       config.cardBodyMaxChars,
     )
     const combined = items.map((item) => `## ${item.event.task}\n${item.event.body}`).join('\n\n---\n\n')
@@ -814,14 +1168,27 @@ export function createNotifyPipeline({
   const sendCard = async (event, color, useLlm) => {
     const cleaned = cleanNoise(event.body)
     let digest = useLlm ? await callLlmDigest({ llm, config, body: cleaned, log, signal }) : null
-    if (!digest) digest = digestFromText(cleaned)
+    if (!digest) {
+      // 2.0 的核心：本地重点提取。即使不配 LLM，也能保住加粗重点与解决方案。
+      digest = extractHighlights(cleaned, {
+        maxSections: config.highlightMaxSections,
+        maxItems: config.highlightMaxItems,
+        itemChars: config.highlightItemChars,
+      })
+    }
     const sha = event.commit || extractCommit(cleaned)
     if (sha) {
-      const rest = digest.artifacts.filter((item) => !/[0-9a-f]{7,40}/i.test(item))
-      digest.artifacts = [`commit ${sha}`, ...rest].slice(0, 3)
+      if (Array.isArray(digest.blocks) && digest.blocks.length > 0) {
+        const exists = digest.blocks.some((block) => block.items.some((item) => item.includes(sha)))
+        if (!exists) digest.blocks[0].items.unshift(`commit ${sha}`)
+      } else if (Array.isArray(digest.artifacts)) {
+        const rest = digest.artifacts.filter((item) => !/[0-9a-f]{7,40}/i.test(item))
+        digest.artifacts = [`commit ${sha}`, ...rest].slice(0, 3)
+      }
     }
     const archived = await saveArchive(event.body)
-    const card = buildCardMessage({ event, digest, color, archiveUrl: archived.url, maxChars: config.cardBodyMaxChars })
+    const bodyText = renderCardBody(digest, config.cardBodyMaxChars) || '(本回合没有文本输出)'
+    const card = buildCardMessage({ event, digest, body: bodyText, color, archiveUrl: archived.url, maxChars: config.cardBodyMaxChars })
     try {
       await send({ card })
     } catch (error) {
@@ -1418,6 +1785,10 @@ export function defaultConfig() {
     todoKeywords: DEFAULT_TODO_KEYWORDS.slice(),
     oneLineMaxChars: DEFAULT_ONE_LINE_MAX_CHARS,
     cardBodyMaxChars: DEFAULT_CARD_BODY_MAX_CHARS,
+    highlightMaxSections: DEFAULT_HIGHLIGHT_MAX_SECTIONS,
+    highlightMaxItems: DEFAULT_HIGHLIGHT_MAX_ITEMS,
+    highlightItemChars: DEFAULT_HIGHLIGHT_ITEM_CHARS,
+    compactMode: DEFAULT_COMPACT_MODE,
     aggregateWindowMs: DEFAULT_AGGREGATE_WINDOW_MS,
     aggregateMaxItems: DEFAULT_AGGREGATE_MAX_ITEMS,
     archiveEnabled: true,
@@ -1510,7 +1881,11 @@ export function normalizeConfig(rawConfig = {}, env = globalThis.process?.env ??
     dropProgress: (config.dropProgress ?? config.drop_progress) !== false,
     todoKeywords: todoKeywords.length > 0 ? todoKeywords : defaults.todoKeywords,
     oneLineMaxChars: Math.min(200, Math.max(40, Math.trunc(numberOr(config.oneLineMaxChars, defaults.oneLineMaxChars, { min: 40 })))),
-    cardBodyMaxChars: Math.min(500, Math.max(80, Math.trunc(numberOr(config.cardBodyMaxChars, defaults.cardBodyMaxChars, { min: 80 })))),
+    cardBodyMaxChars: Math.min(8000, Math.max(80, Math.trunc(numberOr(config.cardBodyMaxChars, defaults.cardBodyMaxChars, { min: 80 })))),
+    highlightMaxSections: Math.min(20, Math.max(1, Math.trunc(numberOr(config.highlightMaxSections, defaults.highlightMaxSections, { min: 1 })))),
+    highlightMaxItems: Math.min(10, Math.max(1, Math.trunc(numberOr(config.highlightMaxItems, defaults.highlightMaxItems, { min: 1 })))),
+    highlightItemChars: Math.min(1000, Math.max(40, Math.trunc(numberOr(config.highlightItemChars, defaults.highlightItemChars, { min: 40 })))),
+    compactMode: config.compactMode === true,
     aggregateWindowMs: Math.max(1, Math.trunc(numberOr(config.aggregateWindowMs, defaults.aggregateWindowMs, { min: 1 }))),
     aggregateMaxItems: Math.max(1, Math.trunc(numberOr(config.aggregateMaxItems, defaults.aggregateMaxItems, { min: 1 }))),
     archiveEnabled: config.archiveEnabled !== false,
@@ -1566,7 +1941,7 @@ export const Config = {
       if (config.includeSubagents !== undefined && config.includeSubagents !== null && typeof config.includeSubagents !== 'boolean') {
         issues.push({ message: 'includeSubagents 必须是布尔值', path: ['includeSubagents'] })
       }
-      for (const key of ['dropProgress', 'archiveEnabled', 'llmEnabled']) {
+      for (const key of ['dropProgress', 'archiveEnabled', 'llmEnabled', 'compactMode']) {
         if (config[key] !== undefined && config[key] !== null && typeof config[key] !== 'boolean') {
           issues.push({ message: `${key} 必须是布尔值`, path: [key] })
         }
@@ -1591,6 +1966,9 @@ export const Config = {
         retryBaseDelayMs: { min: 0, integer: false },
         oneLineMaxChars: { min: 40, integer: true },
         cardBodyMaxChars: { min: 80, integer: true },
+        highlightMaxSections: { min: 1, integer: true },
+        highlightMaxItems: { min: 1, integer: true },
+        highlightItemChars: { min: 40, integer: true },
         aggregateWindowMs: { min: 1, integer: true },
         aggregateMaxItems: { min: 1, integer: true },
         llmTimeoutMs: { min: 100, integer: true },
@@ -1899,16 +2277,17 @@ export function apply(ctx, rawConfig) {
     `loaded v${VERSION}（webhook=${config.webhooks.length} 个，告警=${alertLabel}，签名=${config.secret ? '开启' : '关闭'}，管线=${config.llmEnabled ? 'LLM' : '本地'}，超时=${config.timeoutMs}ms，最多尝试=${config.retries} 次）`,
   )
 
-  // 插件卸载时中断所有在途请求，避免残留重试。
+  // 插件卸载时把聚合中的一行型消息尽量冲出去。
+  // 注意：这里**不中断在途请求**——headless 模式在 turn/end 之后会立刻卸载插件，
+  // 如果此时 abort，飞书其实已经收到请求也拿不到响应，会被误判为失败并触发告警。
+  // 在途请求自身有 timeoutMs 与最多 attempts 次的重试上限，不会无限挂住进程。
   const controller = new AbortController()
   try {
     ctx?.effect?.(() => () => {
-      // 先把聚合中的一行型消息尽量冲出去，再中断在途请求。
       Promise.resolve(pipeline?.flushAll?.()).catch(() => {})
-      controller.abort(new Error('plugin disposed'))
     }, 'dsh-feishu-digest.dispose()')
   } catch {
-    /* effect 不可用时忽略，最坏情况是卸载后仍有请求在飞 */
+    /* effect 不可用时忽略 */
   }
 
   const tracker = createFailureTracker({ threshold: config.alertThreshold, cooldownMs: config.alertCooldownMs })
